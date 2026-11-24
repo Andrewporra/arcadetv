@@ -1865,7 +1865,7 @@ var MiniGolfGame = {
    CIMA/BAIXO = qualidade (0/1/2); A = smoothing; B = zerar medicao. Teclado: setas, Enter, R. */
 var FugaMonstroGame = (function () {
 "use strict";
-var VERSION = "etapa3p2";
+var VERSION = "etapa3p2-fix1";
 var PERF_MODE = true;                         /* <<< chave do modo de teste */
 var MOVE_MODE = true;                         /* <<< Etapa 3 P1: fisica real dos personagens */
 
@@ -1885,6 +1885,7 @@ var QP = [
   { layers: 3, shapes: 60, parts: 40, fog: 0, vig: 0, shake: 0, d: 1 },
   { layers: 4, shapes: 60, parts: 80, fog: 1, vig: 1, shake: 1, d: 2 }
 ];
+var SKY_TOP = "#5fb4e8", SKY_BASE = "#fbe9b9", GND_BASE = "#8a6a43";   /* bases opacas do cenario (correcao dos rastros) */
 var ROWY = [596, 618, 640, 662];   /* pes dos personagens por degrau de profundidade */
 var NSH = 60, NP = 80;
 
@@ -2454,6 +2455,15 @@ function drawParticles() {
 function drawScene() {
   var Q = QP[cfg.q], d = Q.d, n = CHARS[cfg.ci], r, k, id, lim = Q.shapes;
   cx.imageSmoothingEnabled = cfg.sm ? true : false;
+  /* CORRECAO (rastros/personagens repetidos): o ceu cobre y 0-439 e o chao y 560-719, mas a faixa y 440-559 so recebe
+     camadas TRANSPARENTES (colinas/arvores/nevoa). O canvas nunca e limpo, entao ali sobravam os pixels do quadro anterior
+     (personagens no pulo, monstro, paineis translucidos acumulando). Base opaca barata: 1 fillRect (3 com tremor, que
+     tambem descobre 2 px nas bordas). Cores = base do ceu/chao ja usadas nas camadas; sem canvas novo, sem clearRect total. */
+  if (Q.shake) {
+    cx.fillStyle = SKY_TOP; cx.fillRect(0, 0, W, 430);
+    cx.fillStyle = SKY_BASE; cx.fillRect(0, 430, W, 134);
+    cx.fillStyle = GND_BASE; cx.fillRect(0, 564, W, H - 564); cnt += 3;
+  } else { cx.fillStyle = SKY_BASE; cx.fillRect(0, 430, W, 134); cnt++; }
   cx.save();
   if (Q.shake) { cx.translate(Math.round(2 * Math.sin(T * 47)), Math.round(2 * Math.sin(T * 39 + 1))); }
   layer(L.sky, 0, 0.03, 440);
