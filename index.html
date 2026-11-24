@@ -1854,7 +1854,10 @@ var MiniGolfGame = {
     }
 };
 </script>
-<script type="text/plain" id="k_fm">/* ===== FUGA DO MONSTRO — chunk k_fm — Etapa 2 (teste de desempenho) =====
+<script type="text/plain" id="k_fm">/* ===== FUGA DO MONSTRO — chunk k_fm — Etapa 3 / Parte 2 (camera de grupo + HUD sobre a movimentacao da Parte 1) =====
+   Sobre a base da Etapa 2 (teste de desempenho, preservado). MOVE_MODE=true: os 8 personagens passam a ser
+   movidos pela fisica real (corrida automatica, velocidade pelo analogico, pulo A, deslize B).
+   MOVE_MODE=false restaura o comportamento roteirizado da Etapa 2. Sem camera nem HUD novos (Parte 2).
    PERF_MODE=true  -> abre o ambiente de teste de desempenho (formas provisorias).
    PERF_MODE=false -> tela provisoria da Etapa 1.
    ES5 estrito. Sem loop proprio: usa o rAF da plataforma (update/render).
@@ -1862,8 +1865,9 @@ var MiniGolfGame = {
    CIMA/BAIXO = qualidade (0/1/2); A = smoothing; B = zerar medicao. Teclado: setas, Enter, R. */
 var FugaMonstroGame = (function () {
 "use strict";
-var VERSION = "etapa2";
+var VERSION = "etapa3p2";
 var PERF_MODE = true;                         /* <<< chave do modo de teste */
+var MOVE_MODE = true;                         /* <<< Etapa 3 P1: fisica real dos personagens */
 
 var W = 1280, H = 720, TAU = 6.2832;
 var SLOW_MS = 33.4;      /* quadro "lento" = intervalo > 33,4 ms (2 x 16,7 ms; tolera jitter do vsync) */
@@ -1883,6 +1887,108 @@ var QP = [
 ];
 var ROWY = [596, 618, 640, 662];   /* pes dos personagens por degrau de profundidade */
 var NSH = 60, NP = 80;
+
+/* ---------- Etapa 3 / Parte 1: movimentacao e fisica basica ----------
+   Modelo provisorio (sem camera): o cenario rola a SCROLL px/s; cada personagem tem velocidade propria de corrida
+   (SPD_MIN..SPD_MAX). Na tela ele avanca/recua por (velocidade - SCROLL) dentro da area jogavel [XMIN,XMAX].
+   A distancia percorrida (dist) e o estado completo ficam prontos para a camera da Parte 2. */
+var SCROLL = 340;                                  /* velocidade do cenario (px/s) */
+var SPD_MIN = 200, SPD_NORM = 340, SPD_MAX = 520;  /* limites de velocidade de corrida (px/s); nunca para */
+var SPD_ACC = 700;                                 /* aceleracao/desaceleracao da corrida (px/s^2) */
+var DEAD = 0.15;                                   /* zona morta do analogico */
+var GRAV = 2300, JUMP_V = 840;                     /* gravidade (px/s^2) e impulso do pulo (px/s): apice ~153 px, ~0,73 s no ar */
+var SLIDE_T = 0.6, SLIDE_CD = 0.25;                /* duracao maxima do deslize e recarga apos terminar (s) */
+var XMIN = 70, XMAX = 1210;                        /* limites horizontais da area jogavel (tela 1280) */
+var HH_STAND = 52, HH_SLIDE = 28;                  /* altura do corpo em pe / deslizando (px) */
+var ST_RUN = 0, ST_JUMP = 1, ST_FALL = 2, ST_SLIDE = 3;
+/* Etapa 3 / Parte 2: camera lateral de grupo. Tela: sx = CAMX0 + (dist - camPos); janela visivel [XMIN,XMAX] ou seja, meia largura HALF. */
+var CAMX0 = 640, HALF = CAMX0 - XMIN, CAM_K = 5;   /* CAM_K: suavizacao (1/s) da correcao; o avanco em si segue a velocidade media do grupo */
+var camPos = CAMX0, camDX = 0, camInit = true, showPerf = true;    /* showPerf: painel de teste da Etapa 2 (tecla P / vermelho / verde) */
+var mv = [], mvIn = { x: 0, y: 0, a: 0, b: 0 };
+(function () { var k; for (k = 0; k < 8; k++) { mv.push({ x: 0, dist: 0, spd: SPD_NORM, h: 0, vy: 0, st: ST_RUN, gr: 1, slT: 0, cd: 0, pa: 0, pb: 0, hh: HH_STAND }); } })();
+function resetMove() {
+  var i, m;
+  for (i = 0; i < 8; i++) {
+    m = mv[i]; m.x = 250 + ((i * 83) % 240); m.dist = m.x; m.spd = SPD_NORM; m.h = 0; m.vy = 0; m.st = ST_RUN; m.gr = 1;
+    m.slT = 0; m.cd = 0; m.pa = 0; m.pb = 0; m.hh = HH_STAND;
+  }
+  camPos = CAMX0; camDX = 0; camInit = true;
+}
+function endSlide(m) { m.st = ST_RUN; m.slT = 0; m.cd = SLIDE_CD; m.hh = HH_STAND; }
+function moveOne(m, inp, dt) {
+  var ix = inp ? clamp(+inp.x || 0, -1, 1) : 0, a = (inp && inp.a) ? 1 : 0, b = (inp && inp.b) ? 1 : 0;
+  var pressA = (a && !m.pa) ? 1 : 0, pressB = (b && !m.pb) ? 1 : 0, tgt, d, step;
+  m.pa = a; m.pb = b;
+  /* corrida: analogico -> velocidade alvo; neutro volta a velocidade normal (nunca para) */
+  if (ix > -DEAD && ix < DEAD) { ix = 0; } else { ix = ix > 0 ? (ix - DEAD) / (1 - DEAD) : (ix + DEAD) / (1 - DEAD); }
+  if (ix > 0) { tgt = SPD_NORM + ix * (SPD_MAX - SPD_NORM); }
+  else if (ix < 0) { tgt = SPD_NORM + ix * (SPD_NORM - SPD_MIN); }
+  else { tgt = SPD_NORM; }
+  d = tgt - m.spd; step = SPD_ACC * dt;
+  m.spd += d > step ? step : (d < -step ? -step : d);
+  /* deslize: duracao limitada, volta sozinho a corrida */
+  if (m.cd > 0) { m.cd -= dt; }
+  if (m.st === ST_SLIDE) { m.slT -= dt; if (m.slT <= 0) { endSlide(m); } }
+  /* pulo (so no chao, so na borda de subida de A) / deslize (so no chao, so na borda de subida de B) */
+  if (pressA && m.gr) {
+    if (m.st === ST_SLIDE) { endSlide(m); }
+    m.vy = JUMP_V; m.gr = 0; m.st = ST_JUMP;
+  } else if (pressB && m.gr && m.st !== ST_SLIDE && m.cd <= 0) {
+    m.st = ST_SLIDE; m.slT = SLIDE_T; m.hh = HH_SLIDE;
+  }
+  /* fisica vertical (integracao exata para aceleracao constante: independe da taxa de quadros) */
+  if (!m.gr) {
+    m.h += m.vy * dt - 0.5 * GRAV * dt * dt; m.vy -= GRAV * dt;
+    if (m.h <= 0) { m.h = 0; m.vy = 0; m.gr = 1; m.st = ST_RUN; }
+    else { m.st = m.vy > 0 ? ST_JUMP : ST_FALL; }
+  }
+  /* horizontal: distancia total (a posicao na tela e calculada pela camera, em moveCamera) */
+  m.dist += m.spd * dt;
+}
+function moveCamera(dt, n, nC) {
+  var i, m, mn = 1e9, mx = -1e9, sum = 0, spd = 0, lo, hi, tgt, pred, old = camPos, x;
+  if (nC > 0) {                                      /* camera segue o GRUPO (centro + velocidade medias) */
+    for (i = 0; i < nC; i++) { m = mv[i]; if (m.dist < mn) { mn = m.dist; } if (m.dist > mx) { mx = m.dist; } sum += m.dist; spd += m.spd; }
+    tgt = sum / nC; spd /= nC;
+    if (camInit) { camPos = tgt; old = tgt; camInit = false; }   /* primeiro quadro: ja centraliza o grupo (sem salto) */
+    lo = mx - HALF; hi = mn + HALF;                  /* camera so pode ficar onde o mais atrasado e o mais adiantado cabem na tela */
+    if (lo > hi) { tgt = (mn + mx) / 2; lo = tgt; hi = tgt; } else { tgt = clamp(tgt, lo, hi); }
+    pred = camPos + spd * dt;                        /* avanco com o grupo (sem atraso) + correcao suave (sem trancos) */
+    camPos = clamp(pred + (tgt - pred) * (1 - Math.exp(-CAM_K * dt)), lo, hi);
+    if (camPos < old) { camPos = old; }              /* cenario nunca anda para tras (quem fica fora e travado na borda abaixo) */
+  }
+  for (i = 0; i < n; i++) {                          /* todos ficam dentro da area jogavel; quem encosta na borda e travado (nao some) */
+    m = mv[i]; x = CAMX0 + m.dist - camPos;
+    if (x < XMIN) { x = XMIN; m.dist = camPos + XMIN - CAMX0; } else if (x > XMAX) { x = XMAX; m.dist = camPos + XMAX - CAMX0; }
+    m.x = x;
+  }
+  camDX = camPos - old;
+}
+function moveStep(dt, inputs) {
+  var i, n = PERF_MODE ? 8 : players.length, nC = PERF_MODE ? CHARS[cfg.ci] : players.length, inp, m, ph;
+  camDX = 0;
+  if (!(dt > 0)) { return; }
+  if (dt > 0.05) { dt = 0.05; }
+  for (i = 0; i < n; i++) {
+    if (i < players.length) { inp = inputs ? inputs[players[i].id] : null; }
+    else {                                       /* vagas de teste sem jogador: entradas sinteticas (sem alocar objetos) */
+      mvIn.x = Math.sin(T * 0.45 + i * 1.3);
+      ph = (T * 0.9 + i * 0.41) % 2.3; mvIn.a = ph < 0.12 ? 1 : 0;
+      ph = (T * 0.5 + i * 0.29) % 3.1; mvIn.b = ph < 0.15 ? 1 : 0;
+      inp = mvIn;
+    }
+    moveOne(mv[i], inp, dt);
+  }
+  moveCamera(dt, n, nC);
+  if (MOVE_MODE && PERF_MODE) {
+    for (i = 0; i < n; i++) { m = mv[i]; chX[i] = m.x; chJ[i] = m.h; chS[i] = m.st === ST_SLIDE ? 1 : 0; chP[i] = m.dist * 0.036 + i; }
+  }
+}
+function syncView() {
+  var i, m;
+  if (!(MOVE_MODE && PERF_MODE)) { return; }
+  for (i = 0; i < 8; i++) { m = mv[i]; chX[i] = m.x; chJ[i] = m.h; chS[i] = m.st === ST_SLIDE ? 1 : 0; chP[i] = m.dist * 0.036 + i; }
+}
 
 /* ---------- utilitarios ---------- */
 var hasPN = (typeof performance !== "undefined" && performance && typeof performance.now === "function");
@@ -1989,6 +2095,7 @@ function keyDown(e) {
   else if (k === 40) { setCfg(cfg.ci, cfg.q - 1, cfg.sm); }
   else if (k === 13) { setCfg(cfg.ci, cfg.q, cfg.sm ? 0 : 1); }
   else if (k === 82) { resetStats(); }
+  else if (MOVE_MODE && (k === 80 || k === 403 || k === 404)) { showPerf = !showPerf; }
 }
 function perfControl(inp) {
   var x = inp ? (+inp.x || 0) : 0, y = inp ? (+inp.y || 0) : 0, a = inp && inp.a ? 1 : 0, b = inp && inp.b ? 1 : 0;
@@ -2108,8 +2215,43 @@ function buildMonster() {
   x.fillStyle = "#111"; x.beginPath(); circ(x, 440, 292, 8); circ(x, 535, 287, 8); x.fill();
   return c;
 }
+function buildCardsMove() {
+  var arr = [], i, c, x;
+  for (i = 0; i < 8; i++) {
+    c = mkCv(154, 58); x = c.getContext("2d");
+    rrect(x, 1, 1, 152, 56, 10); x.fillStyle = "rgba(0,0,0,.62)"; x.fill(); x.lineWidth = 3; x.strokeStyle = ccol[i]; x.stroke();
+    x.beginPath(); x.arc(21, 29, 13, 0, TAU); x.fillStyle = ccol[i]; x.fill();
+    text(x, String(i + 1), 21, 35, 17, "#111", "center", true);
+    text(x, trunc(cnames[i], 8), 40, 24, 15, "#fff", "left", true);
+    x.fillStyle = "rgba(255,255,255,.2)"; x.fillRect(40, 34, 56, 8);                       /* trilho da velocidade */
+    x.fillStyle = "rgba(255,255,255,.65)"; x.fillRect(40 + Math.round(56 * (SPD_NORM - SPD_MIN) / (SPD_MAX - SPD_MIN)), 31, 2, 14);   /* marca da velocidade normal */
+    x.fillStyle = "rgba(255,255,255,.12)"; x.fillRect(102, 30, 22, 18); x.fillRect(128, 30, 22, 18);   /* caixas dos indicadores (apagadas) */
+    x.fillStyle = "rgba(255,255,255,.35)"; x.beginPath(); x.moveTo(113, 34); x.lineTo(107, 44); x.lineTo(119, 44); x.closePath(); x.fill();
+    x.fillRect(131, 40, 16, 5);
+    arr.push(c);
+  }
+  return arr;
+}
+/* HUD real: so desenha o que muda (barra de velocidade e 2 indicadores); cartao pre-renderizado; ~3-5 operacoes por jogador */
+function drawHudMove(n) {
+  var i, m, f, x, x0 = ((1280 - n * 160) >> 1) + 3;
+  for (i = 0; i < n; i++) {
+    x = x0 + i * 160; m = mv[i];
+    cx.drawImage(L.cards[i], x, 6); cnt++;
+    f = clamp((m.spd - SPD_MIN) / (SPD_MAX - SPD_MIN), 0, 1);
+    if (f > 0.01) { cx.fillStyle = ccol[i]; cx.fillRect(x + 40, 40, 56 * f, 8); cnt++; }
+    if (m.st === ST_JUMP || m.st === ST_FALL) {
+      cx.fillStyle = "#ffd24d"; cx.fillRect(x + 102, 36, 22, 18); cnt++;
+      cx.fillStyle = "#111"; cx.beginPath(); cx.moveTo(x + 113, 40); cx.lineTo(x + 107, 50); cx.lineTo(x + 119, 50); F();
+    } else if (m.st === ST_SLIDE) {
+      cx.fillStyle = "#4de1d6"; cx.fillRect(x + 128, 36, 22, 18); cnt++;
+      cx.fillStyle = "#111"; cx.fillRect(x + 131, 46, 16, 5); cnt++;
+    }
+  }
+}
 function buildCards() {
   var arr = [], i, c, x;
+  if (MOVE_MODE) { return buildCardsMove(); }
   for (i = 0; i < 8; i++) {
     c = mkCv(140, 48); x = c.getContext("2d");
     rrect(x, 1, 1, 138, 46, 10); x.fillStyle = "rgba(0,0,0,.55)"; x.fill(); x.lineWidth = 3; x.strokeStyle = ccol[i]; x.stroke();
@@ -2134,6 +2276,16 @@ function buildLabels() {
 function buildStatic() {
   var c = mkCv(388, 180), x = c.getContext("2d");
   rrect(x, 0, 0, 388, 180, 12); x.fillStyle = "rgba(0,0,0,.66)"; x.fill();
+  if (MOVE_MODE) {
+    text(x, "CONTROLES (cada jogador)", 12, 24, 17, "#ffd24d", "left", true);
+    text(x, "Analógico → / ←  =  mais / menos veloz", 12, 50, 15, "#fff", "left", false);
+    text(x, "A  =  pular (sem pulo duplo)", 12, 72, 15, "#fff", "left", false);
+    text(x, "B  =  deslizar (duração limitada)", 12, 94, 15, "#fff", "left", false);
+    text(x, "A + B por 1,5 s (anfitrião)  =  sair para o menu", 12, 116, 15, "#fff", "left", false);
+    text(x, "Teclado (teste): ← → personagens · ↑ ↓ qualidade", 12, 142, 13, "#cfd6ff", "left", false);
+    text(x, "Enter = smoothing · R = zerar · P = painel de teste", 12, 160, 13, "#cfd6ff", "left", false);
+    return c;
+  }
   text(x, "CONTROLES (anfitrião)", 12, 24, 17, "#ffd24d", "left", true);
   text(x, "ESQ / DIR  =  personagens 0 / 4 / 8", 12, 50, 15, "#fff", "left", false);
   text(x, "CIMA / BAIXO  =  qualidade 0 / 1 / 2", 12, 72, 15, "#fff", "left", false);
@@ -2182,10 +2334,10 @@ function spawnP(x, y, vx, vy, life, size, kind, lim) {
 function simStep(dt) {
   var i, jt, st, lag, lim = QP[cfg.q].parts, n = CHARS[cfg.ci];
   T += dt; stepN++;
-  speed = 340 + 60 * Math.sin(T * 0.5);
-  camX += speed * dt;
-  for (i = 0; i < NSH; i++) { SX[i] -= speed * dt; if (SX[i] < -130) { SX[i] += 1410; } }
-  for (i = 0; i < 8; i++) {
+  speed = MOVE_MODE ? SCROLL : 340 + 60 * Math.sin(T * 0.5);
+  camX += MOVE_MODE ? camDX : speed * dt;
+  for (i = 0; i < NSH; i++) { SX[i] -= MOVE_MODE ? camDX : speed * dt; if (SX[i] < -130) { SX[i] += 1410; } }
+  if (!MOVE_MODE) { for (i = 0; i < 8; i++) {
     lag = (i === 7) ? 0.5 + 0.5 * Math.sin(T * 0.35) : 0;
     chX[i] = 480 + ((i * 83) % 240) + 38 * Math.sin(T * 0.9 + i * 1.7) - lag * 130;
     jt = (T * 0.9 + i * 0.41) % 2.3;
@@ -2193,7 +2345,7 @@ function simStep(dt) {
     st = (T * 0.5 + i * 0.29) % 3.1;
     chS[i] = (st < 0.65 && chJ[i] === 0) ? 1 : 0;
     chP[i] = T * 12 + i;
-  }
+  } }
   mX = -240 + 46 * Math.sin(T * 0.6); mPulse = Math.sin(T * 3);
   /* particulas (pool fixo; sem alocacao) */
   if (lim > 0) {
@@ -2323,6 +2475,7 @@ function drawScene() {
 /* HUD estilo jogo (cartoes + barra de progresso): carga representativa */
 function drawGameHud(n) {
   var i, x, e, p;
+  if (MOVE_MODE) { drawHudMove(n); return; }
   for (i = 0; i < n; i++) {
     x = 24 + i * 154;
     cx.drawImage(L.cards[i], x, 8); cnt++;
@@ -2407,6 +2560,7 @@ function drawGraph() {
 function drawPerfHud() {
   var tn = now(), n = CHARS[cfg.ci], idx;
   drawGameHud(n);
+  if (MOVE_MODE && !showPerf) { return; }
   if (tn - lastHudL >= 250) {
     buildHudL(); lastHudL = tn;
     idx = cellIdx(); res[idx].avg = avgFps(); res[idx].minw = minWinFps(); res[idx].el = elapsed(); res[idx].ok = okNow();
@@ -2456,9 +2610,10 @@ function init(canvas, list) {
     p = list[i];
     players.push({ id: p.id, name: p.name, color: p.color, num: i + 1, bot: isBot(p.id), seen: false, gone: false, ax: 0, a: 0, b: 0 });
   }
+  resetMove();
   if (!PERF_MODE) { buildBg(); return; }
   /* estado do teste: zera tudo (o modulo persiste entre partidas) */
-  T = 0; camX = 0; stepN = 0; updAcc = 0; mX = -240; mPulse = 0; pa = 0; pb = 0; armX = 1; armY = 1; pi = 0; pAlive = 0;
+  showPerf = true; T = 0; camX = 0; stepN = 0; updAcc = 0; mX = -240; mPulse = 0; pa = 0; pb = 0; armX = 1; armY = 1; pi = 0; pAlive = 0;
   cnt = 0; cntLast = 0; lastHudM = 0; lastHudMs = 0; gHead = 0;
   for (i = 0; i < 120; i++) { gArr[i] = 0; }
   for (i = 0; i < 18; i++) { res[i].avg = 0; res[i].minw = 0; res[i].el = 0; res[i].ok = false; }
@@ -2470,12 +2625,13 @@ function init(canvas, list) {
   SX = []; SW = []; SH = []; STY = []; SROW = []; SCOL = []; chX = []; chJ = []; chP = []; chS = [];
   PX = []; PY = []; PVX = []; PVY = []; PL = []; PM = []; PS = []; PK = [];
   initWorld();
-  cfg.ci = 2; cfg.q = 2; cfg.sm = 0;      /* comeca na carga maxima (pior caso) */
+  cfg.ci = 2; cfg.q = MOVE_MODE ? 0 : 2; cfg.sm = 0;   /* MOVE_MODE: configuracao de referencia aprovada (8 pers., qualidade 0, smoothing off); senao carga maxima */
   buildAll();
+  syncView();
   resetStats();
   if (!kdOn && typeof document !== "undefined" && document.addEventListener) { document.addEventListener("keydown", onKey, false); kdOn = true; }
 }
-function restart() { if (PERF_MODE) { resetStats(); } }
+function restart() { resetMove(); syncView(); if (PERF_MODE) { resetStats(); } }
 function update(dt, inputs) {
   var i, p, inp, a0 = 0;
   t += dt;
@@ -2485,8 +2641,9 @@ function update(dt, inputs) {
     if (inp) { p.seen = true; p.ax = clamp(+inp.x || 0, -1, 1); p.a = inp.a ? 1 : 0; p.b = inp.b ? 1 : 0; }
     else if (p.seen) { p.gone = true; p.ax = 0; p.a = 0; p.b = 0; }
   }
+  moveStep(dt, inputs);
   if (PERF_MODE) {
-    perfControl(players.length ? inputs[players[0].id] : null);
+    if (!MOVE_MODE) { perfControl(players.length ? inputs[players[0].id] : null); }   /* em MOVE_MODE o analogico do anfitriao e do jogo; config so por teclado */
     simStep(dt);
     updAcc += now() - a0;
   }
@@ -2506,11 +2663,12 @@ function render(ctx) {
 function destroy() {
   if (kdOn && typeof document !== "undefined" && document.removeEventListener) { document.removeEventListener("keydown", onKey, false); }
   kdOn = false;
+  resetMove();
   players = []; L = null; bgCv = null; cx = null; memBytes = 0;     /* libera ~14 MB de canvases */
 }
 
 return { init: init, update: update, render: render, destroy: destroy, restart: restart,
-         version: VERSION, perfMode: PERF_MODE, getPerf: getPerf, setCfg: setCfg };
+         version: VERSION, perfMode: PERF_MODE, moveMode: MOVE_MODE, getPerf: getPerf, setCfg: setCfg, getMove: function (i) { return mv[i]; }, getCam: function () { return { pos: camPos, dx: camDX, camX: camX }; } };
 })();
 </script>
 <script type="text/plain" id="k_dance">/* ===== DANCE LAB — Fase 1: protótipo de sensores (controle web) =====
