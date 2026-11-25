@@ -2624,7 +2624,7 @@ return{
   if(phase==="intro"){
    if(pt>=INTRO_T){phase="play";pt=0;bannerT=1.5}
   }else if(phase==="play"){
-   pressure();checkEnd(dt);
+   checkEnd(dt);
   }else if(phase==="end"){
    if(pt>=END_T){if(round>=ROUNDS)finish();else{round++;newRound()}}
   }
@@ -2642,14 +2642,13 @@ return{
   drawHud(g);
   if(phase==="intro"){
    g.globalAlpha=pt<INTRO_T-.5?1:Math.max(0,(INTRO_T-pt)/.5);
-   txt(g,"MEMORIZE SEU PERSONAGEM!",W/2,Math.round(150+4*Math.sin(tm*5)),42,"#ffffff","center","rgba(5,8,20,.9)");
-   txt(g,"Depois misture-se à multidão e elimine os outros jogadores",W/2,186,22,"#ffd24d","center","rgba(5,8,20,.9)");
+   txt(g,"MEXA O JOYSTICK PARA DESCOBRIR QUAL É VOCÊ!",W/2,Math.round(150+4*Math.sin(tm*5)),36,"#ffffff","center","rgba(5,8,20,.9)");
+   txt(g,"Misture-se à multidão e elimine os outros jogadores",W/2,186,22,"#ffd24d","center","rgba(5,8,20,.9)");
    g.globalAlpha=1;
   }
-  if(phase==="intro"||phase==="end"){
-   for(i=0;i<P.length;i++){p=P[i];if(p.alive&&p.ent)label(g,p.ent,p.name,p.color,phase==="end"?"sobreviveu":null)}
+  if(phase==="end"){
+   for(i=0;i<P.length;i++){p=P[i];if(p.alive&&p.ent)label(g,p.ent,p.name,p.color,"sobreviveu")}
   }
-  for(i=0;i<P.length;i++){p=P[i];if(p.alive&&p.ent&&p.ent.mark>0&&phase==="play")label(g,p.ent,p.name,p.color,"avistado!")}
   if(bannerT>0){g.globalAlpha=Math.min(1,bannerT*2);txt(g,"MISTUREM-SE!",W/2,360,96,"#ffd24d","center","rgba(5,8,20,.9)");g.globalAlpha=1}
   if(phase==="end")drawPanel(g);
   else if(phase==="final")drawFinal(g);
