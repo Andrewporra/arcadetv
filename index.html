@@ -1860,7 +1860,7 @@ var MiniGolfGame = {
    Contrato: init(canvas, players), update(dt, inputs), render(ctx), destroy(), restart(). ES5 estrito, sem loop proprio. */
 var CorpoGame = (function () {
 "use strict";
-var W = 1280, H = 720, GY = 560, WORLD = 3600, BW = 36, BH = 90, REACH = 80;
+var W = 1280, H = 720, GY = 560, WORLD = 3600, BW = 36, BH = 90, REACH = 72;
 var players = [], bodies = [], boxes = [], cam = 640, T = 0, state = 0, tPlay = 0, tEnd = 0, hostA = 0, nb = 1, LH = 90;
 var latD = false, latE = false, plateC = false, fell = 0, sky = null;
 var SW = { x: 2200, y: 350, r: 28 }, BTN = { x: 2750 }, PL = { x: 1500, w: 80 };
@@ -1875,7 +1875,7 @@ function buildLevel() {
 }
 function gateClosed(g) { return g.k === 0 ? !plateC : (g.k === 1 ? !latD : !latE); }
 function mkBox(x) { return { x: x, y: GY - 20, vy: 0, held: false, w: 40 }; }
-function newArm(side) { return { side: side, ax: side * 0.35, ay: 0.9, g: false, hold: -1 }; }
+function newArm(side) { return { side: side, ax: side * 0.35, ay: 0.9, g: false, hold: -1, ctl: false, hx: 0, hy: 0, hvx: 0, hvy: 0, ex: 0, ey: 0 }; }
 function setup() {
   var n = players.length, i, k, sizes = [], c = 0, b, ps;
   nb = n > 4 ? 2 : 1;
@@ -1885,21 +1885,22 @@ function setup() {
     ps = []; for (k = 0; k < sizes[i]; k++) { ps.push(c++); }
     b = { id: i, ps: ps, k: ps.length, x: 120 + i * 160, y: GY - BH, vx: 0, vy: 0, onG: false, face: 1, ph: 0, pj: 0, pb: 0, butt: 0, emo: 0, tog: false,
       arms: [newArm(-1), newArm(1)], lookx: 0, looky: 0, r: R(0, 0, BW, BH), fin: false };
-    bodies.push(b);
+    ragInit(b); bodies.push(b);
   }
   boxes.push(mkBox(1350));
   latD = false; latE = false; plateC = false; cam = 640; T = 0; tPlay = 0; state = 0; tEnd = 0; hostA = 0; fell = 0;
 }
 function gi(inputs, idx) { var p = players[idx]; return (p && !p.gone && inputs) ? (inputs[p.id] || null) : null; }
-function hand(b, a) { return { x: b.x + a.side * 12 + a.ax * REACH, y: b.y + 32 + a.ay * REACH }; }
+function hand(b, a) { return { x: a.hx, y: a.hy }; }
 function setAim(a, x, y, def) {
   var m;
+  a.ctl = !(x === 0 && y === 0);
   if (x === 0 && y === 0) { a.ax = def * 0.35; a.ay = 0.9; return; }
   m = Math.sqrt(x * x + y * y); if (m > 1) { x /= m; y /= m; } a.ax = x; a.ay = y;
 }
 function grab(b, a, want) {
   var i, bx, h, best = -1, bd = 60 * 60, d;
-  if (want && !a.g) {
+  if (want && (!a.g || a.hold < 0)) {            /* segurando A, a mao agarra assim que alcanca a caixa (a mao tem inercia) */
     h = hand(b, a);
     for (i = 0; i < boxes.length; i++) { bx = boxes[i]; d = (bx.x - h.x) * (bx.x - h.x) + ((bx.y) - h.y) * ((bx.y) - h.y); if (d < bd) { bd = d; best = i; } }
     a.hold = best;
@@ -1920,14 +1921,81 @@ function collideBody(b, axis) {
     else if (b.vy >= 0) { b.y = r.y - BH; b.vy = 0; b.onG = true; } else { b.y = r.y + r.h; b.vy = 0; }
   }
 }
+/* ---------- RAGDOLL leve (esqueleto articulado sobre o controlador do corpo) ----------
+   Tronco: mola angular com inercia (inclina ao acelerar/frear, oscila, cai e levanta). Cabeca: massa com mola no pescoco.
+   Maos e pes: particulas fisicas (mola ate o alvo comandado + amortecimento + gravidade + colisao); cotovelos e joelhos: IK de 2 ossos. */
+function ragInit(b) {
+  var i, a;
+  b.ang = 0; b.av = 0; b.sv = 0; b.psv = 0; b.sq = 0; b.sqv = 0; b.stm = 0; b.gu = 0; b.sd = 1; b.gp = 0; b.wall = false; b.wasG = true;
+  b.hdx = b.x; b.hdy = b.y + 14; b.hvx = 0; b.hvy = 0; b.px = b.x; b.py = b.y + 50; b.nx = b.x; b.ny = b.y + 26;
+  b.ft = [{ x: b.x - 8, y: b.y + BH, vx: 0, vy: 0, kx: 0, ky: 0 }, { x: b.x + 8, y: b.y + BH, vx: 0, vy: 0, kx: 0, ky: 0 }];
+  for (i = 0; i < 2; i++) { a = b.arms[i]; a.hx = b.x + a.side * 14; a.hy = b.y + 78; a.hvx = 0; a.hvy = 0; a.ex = a.hx; a.ey = b.y + 54; }
+}
+function pushOut(p, rx, ry) {
+  var i, r, l, rr, d1, d2, d3, d4, m, list = stat;
+  for (i = 0; i < stat.length + gates.length; i++) {
+    r = i < stat.length ? stat[i] : (gateClosed(gates[i - stat.length]) ? gates[i - stat.length].r : null); if (!r) { continue; }
+    if (p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h) {
+      d1 = p.y - r.y; d2 = r.y + r.h - p.y; d3 = p.x - r.x; d4 = r.x + r.w - p.x; m = Math.min(d1, d2, d3, d4);
+      if (m === d1) { p.y = r.y; if (p.vy > 0) { p.vy = 0; } } else if (m === d2) { p.y = r.y + r.h; if (p.vy < 0) { p.vy = 0; } }
+      else if (m === d3) { p.x = r.x; p.vx = 0; } else { p.x = r.x + r.w; p.vx = 0; }
+    }
+  }
+}
+function ik(sx, sy, hx, hy, L, bx, by, out) {     /* 2 ossos de comprimento L: dobra o cotovelo/joelho para o lado (bx,by) */
+  var dx = hx - sx, dy = hy - sy, d = Math.sqrt(dx * dx + dy * dy) || 0.001, h, px, py;
+  if (d > 2 * L - 0.05) { d = 2 * L - 0.05; }
+  h = Math.sqrt(Math.max(0, L * L - d * d / 4)); px = -dy / (Math.sqrt(dx * dx + dy * dy) || 1); py = dx / (Math.sqrt(dx * dx + dy * dy) || 1);
+  if (px * bx + py * by < 0) { px = -px; py = -py; }
+  out.x = sx + dx / (Math.sqrt(dx * dx + dy * dy) || 1) * d / 2 + px * h; out.y = sy + dy / (Math.sqrt(dx * dx + dy * dy) || 1) * d / 2 + py * h;
+}
+var KO = { x: 0, y: 0 };
+function ragUpdate(b, dt, impact, hit) {
+  var i, a, f, A, ux, uy, rx, ry, k, c, lean, ax, wf, ph, tx, ty, kP, kD, gr, sx, sy, hx, hy, d, lx, ly, e;
+  b.sv += (b.vx - b.sv) * Math.min(1, dt / 0.08); ax = (b.sv - b.psv) / dt; b.psv = b.sv;
+  if (impact > 0) { b.sqv += Math.min(impact, 900) * 0.25; b.av += (b.face) * Math.min(impact, 900) / 900 * 4; if (impact > 760) { b.stm = 0.9; b.sd = b.face; } }
+  if (hit > 0) { b.av -= b.face * Math.min(hit, 300) / 300 * 5; for (i = 0; i < 2; i++) { b.arms[i].hvy -= 260; b.arms[i].hvx -= b.face * 180; } }
+  b.sqv += (-380 * b.sq - 20 * b.sqv) * dt; b.sq += b.sqv * dt; if (b.sq > 14) { b.sq = 14; } else if (b.sq < -4) { b.sq = -4; }
+  lean = b.stm > 0 ? b.sd * 1.45 : (b.sv / 250) * 0.16; k = b.stm > 0 ? 6 : 70; c = b.stm > 0 ? 2.5 : 7;
+  b.av += (-k * (b.ang - lean) - c * b.av - ax * 0.004) * dt; b.ang += b.av * dt; if (b.ang > 1.6) { b.ang = 1.6; b.av = 0; } else if (b.ang < -1.6) { b.ang = -1.6; b.av = 0; }
+  if (b.stm > 0) { b.stm -= dt; if (b.stm <= 0) { b.gu = 0.8; } } else if (b.gu > 0) { b.gu -= dt; } else if (Math.abs(b.ang) > 1.1) { b.stm = 0.9; b.sd = b.ang > 0 ? 1 : -1; }   /* gu: tempo de levantar sem recair */
+  A = b.ang; ux = Math.sin(A); uy = -Math.cos(A); rx = -uy; ry = ux;
+  b.px = b.x; b.py = b.y + 50 + b.sq; b.nx = b.px + ux * 24; b.ny = b.py + uy * 24;
+  tx = b.nx + ux * 14; ty = b.ny + uy * 14;
+  if (Math.abs(tx - b.hdx) > 60 || Math.abs(ty - b.hdy) > 60) { b.hdx = tx; b.hdy = ty; b.hvx = 0; b.hvy = 0; }
+  b.hvx += (500 * (tx - b.hdx) - 18 * b.hvx) * dt; b.hvy += (500 * (ty - b.hdy) - 18 * b.hvy) * dt; b.hdx += b.hvx * dt; b.hdy += b.hvy * dt;
+  wf = b.onG ? Math.min(1, Math.abs(b.sv) / 200) : 0; if (b.onG && b.stm <= 0) { b.gp += Math.abs(b.sv) * dt * 0.05; }
+  for (i = 0; i < 2; i++) {                                           /* bracos */
+    a = b.arms[i]; sx = b.nx + rx * a.side * 12; sy = b.ny + ry * a.side * 12;
+    if (b.stm > 0) { tx = sx - ux * 50; ty = sy - uy * 50; kP = 12; kD = 3; gr = 700; }
+    else if (a.ctl) { tx = sx + a.ax * REACH; ty = sy + a.ay * REACH; kP = 420; kD = 24; gr = 0; }
+    else { tx = sx + a.side * 8 + Math.sin(b.gp + (a.side > 0 ? 0 : 3.1416)) * 18 * wf; ty = sy + 50; kP = 110; kD = 7; gr = 500; }
+    a.hvx += (kP * (tx - a.hx) - kD * a.hvx) * dt; a.hvy += (kP * (ty - a.hy) - kD * a.hvy + gr) * dt; a.hx += a.hvx * dt; a.hy += a.hvy * dt;
+    d = Math.sqrt((a.hx - sx) * (a.hx - sx) + (a.hy - sy) * (a.hy - sy)); if (d > REACH) { a.hx = sx + (a.hx - sx) * REACH / d; a.hy = sy + (a.hy - sy) * REACH / d; }
+    e = { x: a.hx, y: a.hy, vx: a.hvx, vy: a.hvy }; pushOut(e, 0, 0); a.hx = e.x; a.hy = e.y; a.hvx = e.vx; a.hvy = e.vy;   /* maos apoiam em plataformas */
+    ik(sx, sy, a.hx, a.hy, REACH / 2, a.side * 0.5, 1, KO); a.ex = KO.x; a.ey = KO.y; a.sx = sx; a.sy = sy;
+  }
+  for (i = 0; i < 2; i++) {                                           /* pernas */
+    f = b.ft[i]; lx = b.px + rx * (i ? 8 : -8); ly = b.py + ry * (i ? 8 : -8); ph = b.gp + (i ? 3.1416 : 0);
+    if (b.onG && b.stm <= 0) { tx = lx + Math.sin(ph) * 18 * wf; ty = b.y + BH - Math.max(0, Math.cos(ph)) * 12 * wf; kP = 900; kD = 48; gr = 0; }
+    else if (b.onG) { tx = lx + (i ? 16 : -16) + b.sd * 6; ty = b.y + BH; kP = 40; kD = 8; gr = 800; }
+    else { tx = lx + (i ? 10 : -10) + b.face * (i ? 8 : -6); ty = ly + (b.vy < 0 ? 22 : 36); kP = 70; kD = 5; gr = 800; }
+    if (Math.abs(f.x - lx) > 80 || Math.abs(f.y - ly) > 80) { f.x = tx; f.y = ty; f.vx = 0; f.vy = 0; }
+    f.vx += (kP * (tx - f.x) - kD * f.vx) * dt; f.vy += (kP * (ty - f.y) - kD * f.vy + gr) * dt; f.x += f.vx * dt; f.y += f.vy * dt;
+    if (b.onG && f.y > b.y + BH) { f.y = b.y + BH; if (f.vy > 0) { f.vy = 0; } }
+    d = Math.sqrt((f.x - lx) * (f.x - lx) + (f.y - ly) * (f.y - ly)); if (d > 42) { f.x = lx + (f.x - lx) * 42 / d; f.y = ly + (f.y - ly) * 42 / d; }
+    ik(lx, ly, f.x, f.y, 21, b.face, 0.3, KO); f.kx = KO.x; f.ky = KO.y; f.hx = lx; f.hy = ly;
+  }
+}
 function updBody(b, dt, inputs) {
   var li = gi(inputs, b.ps[0]), mx = li ? dz(li.x) : 0, ja = li && li.a ? 1 : 0, i, a, p, q, want, h, near;
-  var iL = null, iR = null, iH = null, buttNow = 0;
-  b.vx = mx * 250; if (mx !== 0) { b.face = mx > 0 ? 1 : -1; }
-  if (ja && !b.pj && b.onG) { b.vy = -640; b.onG = false; } b.pj = ja;
+  var near = false, iL = null, iR = null, iH = null, buttNow = 0, ctl = b.stm > 0 ? 0.4 : 1, wasG = b.onG, vx0, vyPre, impact = 0, hit = 0;
+  b.vx = mx * 250 * ctl; if (mx !== 0) { b.face = mx > 0 ? 1 : -1; }
+  if (ja && !b.pj && b.onG && b.stm <= 0) { b.vy = -640; b.onG = false; b.av -= b.face * 2; b.sqv -= 40; for (i = 0; i < 2; i++) { b.arms[i].hvy -= 220; } } b.pj = ja;
   if (b.k === 1) {                                         /* SOLO: B alterna segurar; cabecada automatica no ar */
     if (li && li.b && !b.pb) { b.tog = !b.tog; } b.pb = (li && li.b) ? 1 : 0;
-    for (i = 0; i < 2; i++) { b.arms[i].ax = b.face * 0.7; b.arms[i].ay = 0.5; grab(b, b.arms[i], b.tog); }
+    near = false; for (i = 0; i < boxes.length; i++) { if (Math.abs(boxes[i].x - b.x) < 120 && Math.abs(boxes[i].y - (b.y + 50)) < 90) { near = true; } }
+    for (i = 0; i < 2; i++) { b.arms[i].ax = b.face * 0.7; b.arms[i].ay = 0.5; b.arms[i].ctl = near || b.tog; grab(b, b.arms[i], b.tog); }
     buttNow = b.onG ? 0 : 1;
   } else if (b.k === 2) {                                  /* DUO: J2 = bracos juntos (analogico) + A segura + B cabecada */
     iL = gi(inputs, b.ps[1]); p = iL ? dz(iL.x) : 0; q = iL ? dz(iL.y) : 0; want = iL && iL.a ? true : false;
@@ -1942,12 +2010,12 @@ function updBody(b, dt, inputs) {
   }
   if (buttNow === 1 && b.k !== 1) { b.butt = 0.3; } else if (b.k === 1 && buttNow) { b.butt = 0.05; } else if (b.butt > 0) { b.butt -= dt; }
   b.vy += 1800 * dt; if (b.vy > 900) { b.vy = 900; }
-  b.x += b.vx * dt; collideBody(b, 0);
-  b.y += b.vy * dt; b.onG = false; collideBody(b, 1);
+  vx0 = b.vx; b.x += b.vx * dt; collideBody(b, 0); if (vx0 !== 0 && b.vx === 0) { if (!b.wall) { hit = Math.abs(vx0); } b.wall = true; } else { b.wall = false; }
+  b.y += b.vy * dt; vyPre = b.vy; b.onG = false; collideBody(b, 1); if (b.onG && !wasG && vyPre > 250) { impact = vyPre; }
   if (b.x < cam - 600 + BW / 2) { b.x = cam - 600 + BW / 2; } else if (b.x > cam + 600 - BW / 2) { b.x = cam + 600 - BW / 2; }
   if (b.x < 18) { b.x = 18; }
-  if (b.y > 780) { b.x = 900; b.y = GY - BH; b.vy = 0; b.tog = false; fell++; }
-  b.ph += Math.abs(b.vx) * dt * 0.05;
+  if (b.y > 780) { b.x = 900; b.y = GY - BH; b.vy = 0; b.tog = false; fell++; ragInit(b); }
+  ragUpdate(b, dt, impact, hit);
   if (b.butt > 0 && Math.abs(b.x - SW.x) < 60 && Math.abs((b.y + 14) - SW.y) < 46) { latD = true; }
   if (b.onG && Math.abs(b.x - BTN.x) < 30 && Math.abs(b.y + BH - (GY - LH)) < 3) { latE = true; }
 }
@@ -1999,16 +2067,17 @@ function txt(c, s, x, y, sz, col, al) { c.font = "bold " + sz + "px Arial, sans-
 function circ(c, x, y, r, f, s) { c.beginPath(); c.arc(x, y, r, 0, 6.2832); if (f) { c.fillStyle = f; c.fill(); } if (s) { c.strokeStyle = s; c.lineWidth = 3; c.stroke(); } }
 function limb(c, x1, y1, x2, y2, w, col) { c.strokeStyle = col; c.lineWidth = w; c.lineCap = "round"; c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke(); }
 function pc(i) { return players[i] ? players[i].color : "#fff"; }
+function poly3(c, x1, y1, x2, y2, x3, y3, w, col) { c.strokeStyle = col; c.lineWidth = w; c.lineCap = "round"; c.lineJoin = "round"; c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.lineTo(x3, y3); c.stroke(); }
 function drawBody(c, b) {
-  var col = b.id ? "#ff8a3d" : "#3da5ff", sw = Math.sin(b.ph * 6) * 16, i, a, h, hx = b.x, hy = b.y + 60, mood = b.butt > 0 ? 1 : (!b.onG ? 2 : 0);
-  var legP = b.ps[0], headP = b.k === 4 ? b.ps[3] : (b.k === 3 ? b.ps[2] : b.ps[b.k === 2 ? 1 : 0]);
-  limb(c, hx - 8, hy, hx - 8 + sw, b.y + BH - 4, 9, "#2b3a55"); limb(c, hx + 8, hy, hx + 8 - sw, b.y + BH - 4, 9, "#2b3a55");
-  circ(c, hx - 8 + sw, b.y + BH - 2, 7, pc(legP)); circ(c, hx + 8 - sw, b.y + BH - 2, 7, pc(legP));   /* aro colorido = dono das pernas */
-  c.fillStyle = col; c.fillRect(hx - 15, b.y + 30, 30, 34);
-  for (i = 0; i < 2; i++) { a = b.arms[i]; h = hand(b, a); limb(c, b.x + a.side * 12, b.y + 36, h.x, h.y, 8, col); circ(c, h.x, h.y, 8, a.g ? "#fff" : pc(b.ps[b.k >= 3 ? i + 1 : (b.k === 2 ? 1 : 0)]), "#222"); }
-  circ(c, hx, b.y + 16, 17, "#ffd9a8", pc(headP));                                                     /* contorno = dono da cabeca */
-  circ(c, hx - 6 + b.lookx * 2, b.y + 14 + b.looky * 2, mood === 2 ? 4.5 : 3.5, "#fff", "#222"); circ(c, hx + 6 + b.lookx * 2, b.y + 14 + b.looky * 2, mood === 2 ? 4.5 : 3.5, "#fff", "#222");
-  c.fillStyle = "#222"; if (mood === 1 || b.emo) { c.beginPath(); c.arc(hx, b.y + 24, 5, 0, 6.2832); c.fill(); } else { c.fillRect(hx - 5, b.y + 23, 10, 2); }
+  var col = b.id ? "#ff8a3d" : "#3da5ff", i, a, f, mood = b.butt > 0 ? 1 : (!b.onG ? 2 : 0), dz2 = b.stm > 0;
+  var legP = b.ps[0], headP = b.k === 4 ? b.ps[3] : (b.k === 3 ? b.ps[2] : b.ps[b.k === 2 ? 1 : 0]), hx = b.hdx, hy = b.hdy;
+  for (i = 0; i < 2; i++) { f = b.ft[i]; poly3(c, f.hx, f.hy, f.kx, f.ky, f.x, f.y, 9, "#2b3a55"); circ(c, f.kx, f.ky, 4.5, "#2b3a55"); circ(c, f.x, f.y, 5, pc(legP)); }
+  poly3(c, b.px, b.py, b.nx, b.ny, b.nx, b.ny, 22, col);                                   /* tronco */
+  for (i = 0; i < 2; i++) { a = b.arms[i]; poly3(c, a.sx, a.sy, a.ex, a.ey, a.hx, a.hy, 8, col); circ(c, a.ex, a.ey, 4, col); circ(c, a.hx, a.hy, 6.5, a.g ? "#fff" : pc(b.ps[b.k >= 3 ? i + 1 : (b.k === 2 ? 1 : 0)]), "#222"); }
+  circ(c, hx, hy, 16, "#ffd9a8", pc(headP));
+  if (dz2) { txt(c, "x", hx - 6, hy - 2, 14, "#222", "center"); txt(c, "x", hx + 6, hy - 2, 14, "#222", "center"); c.fillStyle = "#222"; c.fillRect(hx - 5, hy + 7, 10, 3); }
+  else { circ(c, hx - 6 + b.lookx * 2, hy - 2 + b.looky * 2, mood === 2 ? 4.5 : 3.5, "#fff", "#222"); circ(c, hx + 6 + b.lookx * 2, hy - 2 + b.looky * 2, mood === 2 ? 4.5 : 3.5, "#fff", "#222");
+    c.fillStyle = "#222"; if (mood === 1 || b.emo || mood === 2) { c.beginPath(); c.arc(hx, hy + 8, 4.5, 0, 6.2832); c.fill(); } else { c.fillRect(hx - 5, hy + 7, 10, 2); } }
 }
 function render(c) {
   var i, g, b, bx, sx;
